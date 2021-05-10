@@ -4,6 +4,9 @@ from tensorflow.keras import layers, models
 import numpy as np
 import cv2
 import imutils
+import requests
+import pytesseract
+pytesseract.pytesseract.tesseract_cmd = r'/usr/local/bin/tesseract'
 
 
 options = {"pbLoad": "yolo-plate.pb", "metaLoad": "yolo-plate.meta", "gpu": 0.9}
@@ -12,7 +15,8 @@ yoloPlate = TFNet(options)
 options = {"pbLoad": "yolo-character.pb", "metaLoad": "yolo-character.meta", "gpu":0.9}
 yoloCharacter = TFNet(options)
 
-characterRecognition = tf.keras.models.load_model('character_recognition.h5')
+post_to_api = 1
+api_url = "http://localhost:8009/plates/"
 
 
 def firstCrop(img, predictions):
@@ -85,6 +89,7 @@ def cnnCharRecognition(img):
     blackAndWhiteChar = cv2.resize(blackAndWhiteChar,(75,100))
     image = blackAndWhiteChar.reshape((1, 100,75, 1))
     image = image / 255.0
+    characterRecognition = tf.keras.models.load_model('character_recognition.h5')
     new_predictions = characterRecognition.predict(image)
     char = np.argmax(new_predictions)
     return dictionary[char]
@@ -108,33 +113,104 @@ def yoloCharDetection(predictions,img):
     licensePlate="".join(sortedList)
     return licensePlate
 
-cap = cv2.VideoCapture('vid1.MOV')
+
+def post_plate_to_api(plate, accuracy, owner, detector=None):
+    payload = {'license_number': plate, 'owner': owner, 'detector': detector, 'accuracy': accuracy}
+
+    r = requests.post(api_url, data=payload)
+
+    print("License plate posted. Response is {}".format(r.text))
+
+
+def yolo_extract_plate_images(frame):
+    # Detect the plates
+    predictions = yoloPlate.return_predict(frame)
+    print("Predictions OpenCV", predictions)
+    
+    firstCropImg = firstCrop(frame, predictions)
+    cv2.imshow('First crop plate',firstCropImg)
+
+    return firstCropImg
+
+def cv_extract_plate_images(img):
+    gray=cv2.cvtColor(img,cv2.COLOR_BGR2GRAY)
+    ret,thresh = cv2.threshold(gray,127,255,0)
+    contours,_ = cv2.findContours(thresh,cv2.RETR_LIST,cv2.CHAIN_APPROX_SIMPLE)
+    areas = [cv2.contourArea(c) for c in contours]
+    if(len(areas)!=0):
+        max_index = np.argmax(areas)
+        cnt=contours[max_index]
+        x,y,w,h = cv2.boundingRect(cnt)
+        cv2.rectangle(img,(x,y),(x+w,y+h),(0,255,0),2)
+        secondCrop = img[y:y+h,x:x+w]
+    # else: 
+    #     secondCrop = img
+    return secondCrop
+
+def tesseract_readplate(img):
+    text = pytesseract.image_to_string(img, config='--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
+    print("programming_fever's License Plate Recognition\n")
+    print("Detected license plate Number is:",text)
+    # Cropped = cv2.resize(Cropped,(400,200))
+    # cv2.imshow('Cropped',Cropped)
+
+cap = cv2.VideoCapture('20210502_161520.mp4')
 counter=0
 
 while(cap.isOpened()):
     ret, frame = cap.read()
     h, w, l = frame.shape
-    frame = imutils.rotate(frame, 270)
+    # frame = imutils.rotate(frame, 270)
 
 
     if counter%6 == 0:
         licensePlate = []
         try:
-            predictions = yoloPlate.return_predict(frame)
-            firstCropImg = firstCrop(frame, predictions)
+            # yoloCropImg = yolo_extract_plate_images(frame)
+            # cv2.imshow('yoloCropImg',yoloCropImg)
+
+            # cvCropImg = cv_extract_plate_images(frame)
+            # cv2.imshow('cvCropImg',cvCropImg)
+            
+            firstCropImg = yolo_extract_plate_images(frame)
+            # firstCropImg = cv_extract_plate_images(frame)
+            print("First crop done")
+            cv2.imshow('First crop plate',firstCropImg)
+
             secondCropImg = secondCrop(firstCropImg)
+            print("Second crop done")
             cv2.imshow('Second crop plate',secondCropImg)
-            secondCropImgCopy = secondCropImg.copy()
-            licensePlate.append(opencvReadPlate(secondCropImg))
-            print("OpenCV+CNN : " + licensePlate[0])
-        except:
-            pass
-        try:
-            predictions = yoloCharacter.return_predict(secondCropImg)
-            licensePlate.append(yoloCharDetection(predictions,secondCropImgCopy))
-            print("Yolo+CNN : " + licensePlate[1])
-        except:
-            pass	
+
+            # print("Open CV Read plate")
+            # cv_detected_plate = opencvReadPlate(secondCropImg)
+            # licensePlate.append(cv_detected_plate)
+            # # plate = licensePlate[0]
+            # print("OpenCV+CNN : " + cv_detected_plate)
+            # accuracy = 10
+
+            # Reading the plate with tesseract
+            tesseract_readplate(secondCropImg)
+
+            # Post plate to api
+            # post_plate_to_api(cv_detected_plate, accuracy, 2, "OpenCV+CNN")
+
+            # print("Yolo Read plate")
+            # predictions = yoloCharacter.return_predict(secondCropImg)
+            # print("Predictions Yolo: ", predictions)
+
+            # print("Detect plate with yolo on the second detection")
+            # secondCropImgCopy = secondCropImg.copy()
+            # yolo_detected_plate = yoloCharDetection(predictions,secondCropImgCopy)
+            # licensePlate.append(yolo_detected_plate)
+            # # plate = licensePlate[1]
+            # print("Yolo+CNN plate : " + yolo_detected_plate)
+            # accuracy = 10
+
+            # Post plate to api
+            # post_plate_to_api(yolo_detected_plate, accuracy, 2, "Yolo+CNN")
+
+        except Exception as e:
+            print("error", str(e))
 
     counter+=1
     cv2.imshow('Video',frame)
